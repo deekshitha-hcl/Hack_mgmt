@@ -8,6 +8,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface ParticipantRepository extends JpaRepository<Participant, Long> {
     List<Participant> findByEventId(Long eventId);
 
+    List<Participant> findByEventIdOrderByExperienceYearsDesc(Long eventId);
+
     Optional<Participant> findByParticipantCode(String participantCode);
 
     Optional<Participant> findTopByOrderByIdDesc();

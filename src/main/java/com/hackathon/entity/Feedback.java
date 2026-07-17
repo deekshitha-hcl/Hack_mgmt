@@ -30,9 +30,14 @@ public class Feedback {
     private Long panelistId;
     private Integer technicalRating;
     private Integer communicationRating;
+    private Integer problemSolvingRating;
+    private Integer attitudeRating;
+    private Integer teamworkRating;
 
     @Enumerated(EnumType.STRING)
     private Recommendation recommendation;
 
     private String comments;
+    private String strengths;
+    private String areasOfImprovement;
 }

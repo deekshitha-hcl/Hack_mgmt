@@ -128,12 +128,23 @@ Common status codes:
   "panelistId": 1,
   "technicalRating": 5,
   "communicationRating": 4,
+  "problemSolvingRating": 4,
+  "attitudeRating": 5,
+  "teamworkRating": 4,
   "recommendation": "HIRE",
-  "comments": "Strong backend fundamentals"
+  "comments": "Strong backend fundamentals",
+  "strengths": "Deep Java knowledge, proactive communicator",
+  "areasOfImprovement": "Could improve system design skills"
 }
 ```
 
-`recommendation` values: `HIRE`, `HOLD`, `REJECT`.
+`recommendation` is auto-computed from the average of all five ratings and is not accepted as input:
+
+| Average score | Recommendation |
+| --- | --- |
+| ≥ 4.0 | `HIRE` |
+| ≥ 2.5 | `HOLD` |
+| < 2.5 | `REJECT` |
 
 ### Squad
 
@@ -925,8 +936,14 @@ Request body:
 | `panelistId` | number | Yes | Must reference an existing panelist |
 | `technicalRating` | number | Yes | Integer from `1` to `5` |
 | `communicationRating` | number | Yes | Integer from `1` to `5` |
-| `recommendation` | string | Yes | `HIRE`, `HOLD`, or `REJECT` |
-| `comments` | string | No | Optional |
+| `problemSolvingRating` | number | Yes | Integer from `1` to `5` |
+| `attitudeRating` | number | Yes | Integer from `1` to `5` |
+| `teamworkRating` | number | Yes | Integer from `1` to `5` |
+| `comments` | string | No | Optional free-text comments |
+| `strengths` | string | No | Optional strengths observed |
+| `areasOfImprovement` | string | No | Optional improvement notes |
+
+`recommendation` is **not** a request field — it is auto-computed from the average of all five ratings.
 
 Request example:
 
@@ -936,8 +953,12 @@ Request example:
   "panelistId": 1,
   "technicalRating": 5,
   "communicationRating": 4,
-  "recommendation": "HIRE",
-  "comments": "Strong backend fundamentals"
+  "problemSolvingRating": 4,
+  "attitudeRating": 5,
+  "teamworkRating": 4,
+  "comments": "Strong backend fundamentals",
+  "strengths": "Deep Java knowledge, proactive communicator",
+  "areasOfImprovement": "Could improve system design skills"
 }
 ```
 
@@ -950,13 +971,19 @@ Response: `201 Created`
   "panelistId": 1,
   "technicalRating": 5,
   "communicationRating": 4,
+  "problemSolvingRating": 4,
+  "attitudeRating": 5,
+  "teamworkRating": 4,
   "recommendation": "HIRE",
-  "comments": "Strong backend fundamentals"
+  "comments": "Strong backend fundamentals",
+  "strengths": "Deep Java knowledge, proactive communicator",
+  "areasOfImprovement": "Could improve system design skills"
 }
 ```
 
 Notes:
 
+- `recommendation` is auto-computed: avg ≥ 4.0 → `HIRE`, avg ≥ 2.5 → `HOLD`, avg < 2.5 → `REJECT`.
 - After feedback is created, the participant status is automatically updated to `COMPLETED`.
 
 ### Get All Feedback
@@ -977,15 +1004,20 @@ Response: `200 OK`
     "panelistId": 1,
     "technicalRating": 5,
     "communicationRating": 4,
+    "problemSolvingRating": 4,
+    "attitudeRating": 5,
+    "teamworkRating": 4,
     "recommendation": "HIRE",
-    "comments": "Strong backend fundamentals"
+    "comments": "Strong backend fundamentals",
+    "strengths": "Deep Java knowledge, proactive communicator",
+    "areasOfImprovement": "Could improve system design skills"
   }
 ]
 ```
 
 ## Squad Endpoints
 
-### Create Squad
+### Create Squad (Manual)
 
 `POST /api/squads`
 
@@ -1019,7 +1051,57 @@ Response: `201 Created`
 }
 ```
 
-### Add Squad Member
+### Auto-Generate Squads
+
+`POST /api/squads/auto-generate`
+
+Access: `ROLE_ADMIN`
+
+Content-Type: `application/json`
+
+Automatically distributes all participants of an event into balanced squads. Each squad gets a mix of experience levels. Remainder participants are assigned to the squad with the lowest total experience sum.
+
+Request body:
+
+| Field | Type | Required | Validation |
+| --- | --- | --- | --- |
+| `eventId` | number | Yes | Must reference an existing event |
+| `minMembers` | number | Yes | Minimum `2`; determines squad count (`floor(total / minMembers)`) |
+| `maxMembers` | number | Yes | Must be `>= minMembers` |
+| `squadNamePrefix` | string | No | Prefix for squad names, e.g. `"Team"` → `"Team 1"`, `"Team 2"`. Defaults to `"Squad"` |
+| `techStackFilter` | string | No | Keyword to filter participants by tech stack (e.g. `"Java"`). Omit to include all participants |
+
+Request example:
+
+```json
+{
+  "eventId": 1,
+  "minMembers": 3,
+  "maxMembers": 4,
+  "squadNamePrefix": "Team",
+  "techStackFilter": "Java"
+}
+```
+
+Response: `201 Created` — list of created squads.
+
+```json
+[
+  { "id": 1, "eventId": 1, "name": "Team 1" },
+  { "id": 2, "eventId": 1, "name": "Team 2" },
+  { "id": 3, "eventId": 1, "name": "Team 3" }
+]
+```
+
+Notes:
+
+- Participants are sorted by experience years (descending) then distributed via round-robin so every squad gets a balanced seniority mix.
+- Remainder participants (e.g. 10 ÷ 3 = 3 squads + 1 extra) are each assigned to the squad with the lowest cumulative experience sum.
+- Example: 10 participants, `minMembers=3` → 3 squads of sizes `[4, 3, 3]`.
+- Returns `400 Bad Request` if no participants match the filter or `maxMembers < minMembers`.
+- Returns `404 Not Found` if the event does not exist.
+
+### Add Squad Member (Manual)
 
 `POST /api/squads/{squadId}/members/{participantId}`
 

@@ -1,5 +1,6 @@
 package com.hackathon.controller;
 
+import com.hackathon.dto.AutoSquadRequest;
 import com.hackathon.dto.SquadRequest;
 import com.hackathon.entity.Participant;
 import com.hackathon.entity.Squad;
@@ -33,6 +34,13 @@ public class SquadController {
     @PreAuthorize("hasRole('ADMIN')")
     public Squad create(@Valid @RequestBody SquadRequest request) {
         return squadService.create(request);
+    }
+
+    @PostMapping("/auto-generate")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasRole('ADMIN')")
+    public List<Squad> autoGenerate(@Valid @RequestBody AutoSquadRequest request) {
+        return squadService.autoGenerate(request);
     }
 
     @PostMapping("/{squadId}/members/{participantId}")
