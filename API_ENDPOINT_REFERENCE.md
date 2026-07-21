@@ -15,7 +15,8 @@ Dates use ISO format (`YYYY-MM-DD`). Date-time values are returned as ISO local 
 | Access | Endpoints |
 | --- | --- |
 | Public | `POST /api/auth/login`, `POST /api/participants/register`, `GET /api/events`, `GET /api/events/{id}`, `GET /api/system/keep-alive`, `GET /api/panelists/invite/validate/{token}`, `POST /api/panelists/register/{token}` |
-| `ROLE_ADMIN` | `POST /api/auth/register`, `POST /api/events`, `PUT /api/events/{id}`, `DELETE /api/events/{id}`, `DELETE /api/participants/{id}`, `/api/dashboard/**`, `POST /api/panelists/invite`, `GET /api/panelists/invite/active`, `DELETE /api/panelists/{id}`, `/api/squads/**` |
+| `ROLE_ADMIN` | `POST /api/auth/register`, `POST /api/events`, `PUT /api/events/{id}`, `DELETE /api/events/{id}`, `DELETE /api/participants/{id}`, `/api/dashboard/summary`, `/api/dashboard/panelist/{panelistId}`, `POST /api/panelists/invite`, `GET /api/panelists/invite/active`, `DELETE /api/panelists/{id}`, `/api/squads/**` |
+| `ROLE_PANELIST` | `GET /api/dashboard/panelist/me`, `GET /api/dashboard/panelist/{panelistId}`, `GET /api/panelists`, `GET /api/participants/**`, `/api/feedback/**` |
 | `ROLE_ADMIN` or `ROLE_PANELIST` | `GET /api/panelists`, `GET /api/participants/**`, `/api/feedback/**` |
 
 ## Common Models
@@ -126,25 +127,22 @@ Common status codes:
   "id": 1,
   "participantId": 1,
   "panelistId": 1,
-  "technicalRating": 5,
-  "communicationRating": 4,
-  "problemSolvingRating": 4,
-  "attitudeRating": 5,
-  "teamworkRating": 4,
-  "recommendation": "HIRE",
-  "comments": "Strong backend fundamentals",
-  "strengths": "Deep Java knowledge, proactive communicator",
-  "areasOfImprovement": "Could improve system design skills"
+  "feedbackType": "DESIGN",
+  "submittedAt": "2026-07-20T11:14:41"
 }
 ```
 
-`recommendation` is auto-computed from the average of all five ratings and is not accepted as input:
+Detailed field values are stored dynamically in `participant_feedback_details` based on the selected template.
 
-| Average score | Recommendation |
+`feedbackType` values:
+
+| Value | Purpose |
 | --- | --- |
-| ≥ 4.0 | `HIRE` |
-| ≥ 2.5 | `HOLD` |
-| < 2.5 | `REJECT` |
+| `DESIGN` | Design-focused evaluation |
+| `DEVELOPMENT` | Development-focused evaluation |
+| `FINAL_REVIEW` | Final evaluation and recommendation |
+
+
 
 ### Squad
 
@@ -178,6 +176,47 @@ Common status codes:
   "emailsSent": 35
 }
 ```
+
+### Panelist Dashboard
+
+`GET /api/dashboard/panelist/me`
+
+Access: `ROLE_PANELIST`
+
+Response example:
+
+```json
+{
+  "panelistId": 5,
+  "panelistName": "Deekshi",
+  "panelistEmail": "deekshi@example.com",
+  "eventsHandled": 2,
+  "participantsFeedbackGiven": 8,
+  "feedbackSubmitted": 8,
+  "events": [
+    {
+      "eventId": 101,
+      "eventName": "Buildathon",
+      "participantCount": 5,
+      "feedbackCount": 5,
+      "feedbackTypes": ["DESIGN", "DEVELOPMENT"],
+      "lastFeedbackAt": "2026-07-20T11:00:00"
+    }
+  ]
+}
+```
+
+`GET /api/dashboard/panelist/{panelistId}`
+
+Access: `ROLE_ADMIN` or `ROLE_PANELIST`
+
+Notes:
+
+- The dashboard is derived from feedback activity, since there is no panelist-event assignment table in the current schema.
+- `eventsHandled` counts distinct events with at least one feedback submission from that panelist.
+- `participantsFeedbackGiven` counts distinct participants the panelist has evaluated.
+- `feedbackSubmitted` counts all feedback rows submitted by the panelist.
+- `events` contains per-event breakdowns for UI cards or tables.
 
 ### Keep Alive Response
 
@@ -920,9 +959,228 @@ Notes:
 
 ## Feedback Endpoints
 
-### Create Feedback
+### Get Feedback Template By Type
 
-`POST /api/feedback`
+`GET /api/feedback/templates/{feedbackType}`
+
+Access: `ROLE_ADMIN` or `ROLE_PANELIST`
+
+Path parameters:
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `feedbackType` | string | Yes | One of `DESIGN`, `DEVELOPMENT`, `FINAL_REVIEW` |
+
+Request: No request body.
+
+Response: `200 OK`
+
+```json
+{
+  "feedbackType": "DESIGN",
+  "fields": [
+    { "name": "uiUxUnderstanding", "type": "RATING", "required": true },
+    { "name": "wireframingSkills", "type": "RATING", "required": true },
+    { "name": "creativity", "type": "RATING", "required": true },
+    { "name": "designToolsKnowledge", "type": "RATING", "required": true },
+    { "name": "comments", "type": "TEXT", "required": false }
+  ]
+}
+```
+
+Template details by type:
+
+`DESIGN`
+- `uiUxUnderstanding` (`RATING`, required)
+- `wireframingSkills` (`RATING`, required)
+- `creativity` (`RATING`, required)
+- `designToolsKnowledge` (`RATING`, required)
+- `comments` (`TEXT`, optional)
+
+`DEVELOPMENT`
+- `codingSkills` (`RATING`, required)
+- `problemSolving` (`RATING`, required)
+- `databaseKnowledge` (`RATING`, required)
+- `apiDevelopment` (`RATING`, required)
+- `codeQuality` (`RATING`, required)
+- `comments` (`TEXT`, optional)
+
+`FINAL_REVIEW`
+- `projectCompletionStatus` (`RATING`, required)
+- `featureImplementation` (`RATING`, required)
+- `presentationSkills` (`RATING`, required)
+- `teamCollaboration` (`RATING`, required)
+- `finalComments` (`TEXT`, optional)
+
+Detailed implementation:
+
+1. Backend loads field metadata from `feedback_template` by `feedbackType`.
+2. Fields are returned in insertion order and should be rendered dynamically by frontend.
+3. This endpoint is source-of-truth for form generation. Frontend should not hardcode fields.
+
+Error behavior:
+
+- Invalid `feedbackType` enum value returns `400 Bad Request`.
+- Valid enum with no configured template rows returns `404 Not Found`.
+
+Example cURL:
+
+```bash
+curl -X GET "http://localhost:8080/api/feedback/templates/DESIGN" \
+  -H "Authorization: Bearer <jwt-token>"
+```
+
+### Get Participant Feedback Status
+
+`GET /api/feedback/status/{participantId}`
+
+Access: `ROLE_ADMIN` or `ROLE_PANELIST`
+
+Path parameters:
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `participantId` | number | Yes | Participant ID to check completion status |
+
+Request: No request body.
+
+Response: `200 OK`
+
+```json
+{
+  "participantId": 1,
+  "totalSubmitted": 2,
+  "totalAllowed": 3,
+  "completed": false,
+  "feedbackTypes": [
+    { "feedbackType": "DESIGN", "submitted": true },
+    { "feedbackType": "DEVELOPMENT", "submitted": true },
+    { "feedbackType": "FINAL_REVIEW", "submitted": false }
+  ]
+}
+```
+
+Detailed implementation:
+
+1. Backend validates participant existence.
+2. Backend checks submission presence for each feedback type.
+3. `totalAllowed` is always `3` (DESIGN, DEVELOPMENT, FINAL_REVIEW).
+4. `completed` becomes `true` only when all three are submitted.
+
+Error behavior:
+
+- Unknown participant returns `404 Not Found`.
+
+Example cURL:
+
+```bash
+curl -X GET "http://localhost:8080/api/feedback/status/1" \
+  -H "Authorization: Bearer <jwt-token>"
+```
+
+### Get Participant Feedback Details
+
+`GET /api/feedback/participant/{participantId}`
+
+Also available as: `GET /api/feedback/by-participant/{participantId}`
+
+Access: `ROLE_ADMIN` or `ROLE_PANELIST`
+
+Path parameters:
+
+| Parameter | Type | Required | Description |
+| --- | --- | --- | --- |
+| `participantId` | number | Yes | Participant ID to retrieve all feedback records |
+
+Request: No request body.
+
+Response: `200 OK` (returns array of feedback records, empty if none submitted)
+
+```json
+[
+  {
+    "id": 101,
+    "participantId": 12,
+    "panelistId": 5,
+    "panelistName": "Deekshi",
+    "panelistEmail": "deekshi@example.com",
+    "feedbackType": "DESIGN",
+    "submittedAt": "2026-07-20T10:30:00",
+    "fieldValues": {
+      "uiUxUnderstanding": "5",
+      "wireframingSkills": "4",
+      "creativity": "5",
+      "designToolsKnowledge": "4",
+      "comments": "Strong design thinking"
+    }
+  },
+  {
+    "id": 102,
+    "participantId": 12,
+    "panelistId": 5,
+    "panelistName": "Deekshi",
+    "panelistEmail": "deekshi@example.com",
+    "feedbackType": "DEVELOPMENT",
+    "submittedAt": "2026-07-20T11:45:00",
+    "fieldValues": {
+      "codingSkills": "4",
+      "problemSolving": "5",
+      "databaseKnowledge": "4",
+      "apiDevelopment": "4",
+      "codeQuality": "5",
+      "comments": "Clean and well-structured code"
+    }
+  }
+]
+```
+
+Detailed implementation:
+
+1. Validate participant exists.
+2. Fetch all feedback records for participant sorted by `submittedAt` ascending.
+3. For each feedback, load panelist name and email.
+4. For each feedback, fetch all dynamic field values from `participant_feedback_details`.
+5. Combine field key-value pairs into `fieldValues` map.
+6. Return array of full records or empty array if none exist.
+
+Response details:
+
+- `id`: Feedback record ID
+- `panelistName`: Full name of the panelist; falls back to "Unknown" if panelist deleted
+- `panelistEmail`: Email of the panelist; falls back to "unknown@example.com" if panelist deleted
+- `fieldValues`: Object with all submitted field names as keys and their values as strings
+- Records sorted by oldest `submittedAt` first
+
+Error behavior:
+
+- Unknown participant returns `404 Not Found`.
+- Participant with no feedback returns `200 OK` with empty array `[]`.
+
+Example cURL:
+
+```bash
+curl -X GET "http://localhost:8080/api/feedback/participant/1" \
+  -H "Authorization: Bearer <jwt-token>"
+```
+
+Alternative alias:
+
+```bash
+curl -X GET "http://localhost:8080/api/feedback/by-participant/1" \
+  -H "Authorization: Bearer <jwt-token>"
+```
+
+Frontend usage notes:
+
+- Use this endpoint to display feedback submission history for a participant in dashboards.
+- No pagination: returns all feedback records. If needed, implement pagination later.
+- Each `fieldValues` entry matches the template fields for that `feedbackType`.
+- Panelist info is included so you can display "Feedback from Deekshi" with email and domain if desired.
+
+
+### Submit Participant Feedback
+
+`POST /api/feedback/submit`
 
 Access: `ROLE_ADMIN` or `ROLE_PANELIST`
 
@@ -934,85 +1192,117 @@ Request body:
 | --- | --- | --- | --- |
 | `participantId` | number | Yes | Must reference an existing participant |
 | `panelistId` | number | Yes | Must reference an existing panelist |
-| `technicalRating` | number | Yes | Integer from `1` to `5` |
-| `communicationRating` | number | Yes | Integer from `1` to `5` |
-| `problemSolvingRating` | number | Yes | Integer from `1` to `5` |
-| `attitudeRating` | number | Yes | Integer from `1` to `5` |
-| `teamworkRating` | number | Yes | Integer from `1` to `5` |
-| `comments` | string | No | Optional free-text comments |
-| `strengths` | string | No | Optional strengths observed |
-| `areasOfImprovement` | string | No | Optional improvement notes |
+| `feedbackType` | string | Yes | One of `DESIGN`, `DEVELOPMENT`, `FINAL_REVIEW` |
+| `fieldValues` | object | Yes | Key-value map containing fields defined for selected `feedbackType` |
 
-`recommendation` is **not** a request field — it is auto-computed from the average of all five ratings.
-
-Request example:
+Request example (`DESIGN`):
 
 ```json
 {
   "participantId": 1,
   "panelistId": 1,
-  "technicalRating": 5,
-  "communicationRating": 4,
-  "problemSolvingRating": 4,
-  "attitudeRating": 5,
-  "teamworkRating": 4,
-  "comments": "Strong backend fundamentals",
-  "strengths": "Deep Java knowledge, proactive communicator",
-  "areasOfImprovement": "Could improve system design skills"
+  "feedbackType": "DESIGN",
+  "fieldValues": {
+    "uiUxUnderstanding": "5",
+    "wireframingSkills": "4",
+    "creativity": "4",
+    "designToolsKnowledge": "5",
+    "comments": "Great sense of design fundamentals"
+  }
 }
 ```
 
-Response: `201 Created`
+Request example (`DEVELOPMENT`):
 
 ```json
 {
-  "id": 1,
   "participantId": 1,
   "panelistId": 1,
-  "technicalRating": 5,
-  "communicationRating": 4,
-  "problemSolvingRating": 4,
-  "attitudeRating": 5,
-  "teamworkRating": 4,
-  "recommendation": "HIRE",
-  "comments": "Strong backend fundamentals",
-  "strengths": "Deep Java knowledge, proactive communicator",
-  "areasOfImprovement": "Could improve system design skills"
+  "feedbackType": "DEVELOPMENT",
+  "fieldValues": {
+    "codingSkills": "5",
+    "problemSolving": "4",
+    "databaseKnowledge": "4",
+    "apiDevelopment": "5",
+    "codeQuality": "4",
+    "comments": "Solid backend implementation"
+  }
 }
 ```
 
-Notes:
+Request example (`FINAL_REVIEW`):
 
-- `recommendation` is auto-computed: avg ≥ 4.0 → `HIRE`, avg ≥ 2.5 → `HOLD`, avg < 2.5 → `REJECT`.
-- After feedback is created, the participant status is automatically updated to `COMPLETED`.
-
-### Get All Feedback
-
-`GET /api/feedback`
-
-Access: `ROLE_ADMIN` or `ROLE_PANELIST`
-
-Request: No request body.
+```json
+{
+  "participantId": 1,
+  "panelistId": 1,
+  "feedbackType": "FINAL_REVIEW",
+  "fieldValues": {
+    "projectCompletionStatus": "5",
+    "featureImplementation": "4",
+    "presentationSkills": "4",
+    "teamCollaboration": "5",
+    "finalComments": "Ready for next round"
+  }
+}
+```
 
 Response: `200 OK`
 
 ```json
-[
-  {
-    "id": 1,
-    "participantId": 1,
-    "panelistId": 1,
-    "technicalRating": 5,
-    "communicationRating": 4,
-    "problemSolvingRating": 4,
-    "attitudeRating": 5,
-    "teamworkRating": 4,
-    "recommendation": "HIRE",
-    "comments": "Strong backend fundamentals",
-    "strengths": "Deep Java knowledge, proactive communicator",
-    "areasOfImprovement": "Could improve system design skills"
-  }
-]
+{
+  "status": "SUCCESS",
+  "message": "Feedback submitted successfully"
+}
+```
+
+Detailed implementation:
+
+1. Validate `participantId`, `panelistId`, `feedbackType`, and `fieldValues` are present.
+2. Validate participant and panelist existence.
+3. Check uniqueness by participant + feedbackType.
+4. Load configured template for selected type.
+5. Reject unknown fields not present in template.
+6. Validate required fields are provided.
+7. Validate `RATING` fields in range `1-5`.
+8. Save record in `participant_feedback`.
+9. Save each dynamic field in `participant_feedback_details`.
+10. Mark participant status as `COMPLETED`.
+
+Notes:
+
+- `feedbackType` is mandatory.
+- All required fields for selected `feedbackType` must be provided.
+- `RATING` fields must be integers from `1` to `5`.
+- Unknown fields (not in template) are rejected with `400 Bad Request`.
+- Each participant can have at most 3 feedback submissions total: exactly one for each type (`DESIGN`, `DEVELOPMENT`, `FINAL_REVIEW`).
+- Duplicate submission for the same participant + feedback type returns `409 Conflict`, even from a different panelist.
+- After feedback is submitted, participant status is updated to `COMPLETED`.
+
+Example error responses:
+
+Duplicate submission (`409 Conflict`):
+
+```json
+{
+  "timestamp": "2026-07-20T11:40:00",
+  "status": 409,
+  "error": "Conflict",
+  "message": "Feedback for this type is already submitted for participant: DESIGN",
+  "validationErrors": null
+}
+```
+
+Unknown field (`400 Bad Request`):
+
+```json
+{
+  "timestamp": "2026-07-20T11:40:00",
+  "status": 400,
+  "error": "Bad Request",
+  "message": "Unknown field submitted: randomField",
+  "validationErrors": null
+}
 ```
 
 ## Squad Endpoints

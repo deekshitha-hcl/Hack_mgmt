@@ -53,8 +53,13 @@ public class SecurityConfig {
                         .permitAll()
                         .requestMatchers(HttpMethod.GET, "/api/events", "/api/events/*")
                         .permitAll()
+                            .requestMatchers(
+                                "/api/dashboard/panelist/me",
+                                "/api/dashboard/panelist/*")
+                            .hasAnyRole("ADMIN", "PANELIST")
+                            .requestMatchers("/api/dashboard/summary")
+                            .hasRole("ADMIN")
                         .requestMatchers(
-                                "/api/dashboard/**",
                                 "/api/auth/register")
                         .hasRole("ADMIN")
                         .requestMatchers(HttpMethod.GET, "/api/squads/event/*")

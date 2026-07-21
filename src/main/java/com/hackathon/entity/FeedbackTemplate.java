@@ -8,7 +8,6 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
-import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -17,10 +16,10 @@ import lombok.Setter;
 
 @Entity
 @Table(
-        name = "participant_feedback",
+        name = "feedback_template",
         uniqueConstraints = @UniqueConstraint(
-                name = "uk_feedback_participant_type",
-                columnNames = {"participant_id", "feedback_type"}
+                name = "uk_feedback_template_type_field",
+                columnNames = {"feedback_type", "field_name"}
         )
 )
 @Getter
@@ -28,17 +27,19 @@ import lombok.Setter;
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-public class Feedback {
+public class FeedbackTemplate {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    private Long participantId;
-    private Long panelistId;
-
     @Enumerated(EnumType.STRING)
     private FeedbackType feedbackType;
 
-    private LocalDateTime submittedAt;
+    private String fieldName;
+
+    @Enumerated(EnumType.STRING)
+    private FeedbackFieldType fieldType;
+
+    private Boolean isRequired;
 }

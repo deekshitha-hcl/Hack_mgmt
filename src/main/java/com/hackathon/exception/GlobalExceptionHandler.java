@@ -22,6 +22,11 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, exception.getMessage(), null);
     }
 
+    @ExceptionHandler(DuplicateSubmissionException.class)
+    public ResponseEntity<ErrorResponse> handleDuplicateSubmission(DuplicateSubmissionException exception) {
+        return build(HttpStatus.CONFLICT, exception.getMessage(), null);
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ErrorResponse> handleValidation(MethodArgumentNotValidException exception) {
         Map<String, String> errors = new HashMap<>();
