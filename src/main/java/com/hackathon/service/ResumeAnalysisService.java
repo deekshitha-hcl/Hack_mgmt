@@ -35,15 +35,18 @@ public class ResumeAnalysisService {
     private final ObjectMapper objectMapper;
     private final String apiKey;
     private final String model;
+    private final GeminiCircuitBreaker circuitBreaker;
 
     public ResumeAnalysisService(RestClient.Builder restClientBuilder,
                                  ObjectMapper objectMapper,
                                  @Value("${gemini.api-key:}") String apiKey,
-                                 @Value("${gemini.model:gemini-2.5-flash}") String model) {
+                                 @Value("${gemini.model:gemini-2.5-flash}") String model,
+                                 GeminiCircuitBreaker circuitBreaker) {
         this.restClient = restClientBuilder.build();
         this.objectMapper = objectMapper;
         this.apiKey = apiKey;
         this.model = model;
+        this.circuitBreaker = circuitBreaker;
     }
 
     public ResumeAnalysis analyze(MultipartFile resume, Integer experienceYears) {
@@ -101,6 +104,9 @@ public class ResumeAnalysisService {
         if (!StringUtils.hasText(apiKey)) {
             throw new BadRequestException("Gemini API key is not configured. Set GEMINI_API_KEY or gemini.api-key.");
         }
+        if (circuitBreaker.isOpen()) {
+            throw new BadRequestException("Gemini API circuit breaker is open — too many recent failures. Will retry automatically.");
+        }
 
         String url = UriComponentsBuilder
                 .fromHttpUrl("https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent")
@@ -119,24 +125,36 @@ public class ResumeAnalysisService {
         generationConfig.put("temperature", 0.2);
 
         try {
-            JsonNode response = restClient.post()
+            // Retrieve as raw String to avoid content-type mismatch errors
+            // (Gemini may return application/octet-stream even when the body is JSON)
+            String rawBody = restClient.post()
                     .uri(url)
                     .contentType(MediaType.APPLICATION_JSON)
-                    .accept(MediaType.APPLICATION_JSON)
                     .body(request)
                     .retrieve()
-                    .body(JsonNode.class);
+                    .body(String.class);
 
-            String jsonText = response == null ? null
-                    : response.path("candidates").path(0).path("content").path("parts").path(0).path("text").asText(null);
+            if (!StringUtils.hasText(rawBody)) {
+                throw new BadRequestException("Gemini returned an empty response.");
+            }
+            log.info("ResumeAnalysis phase=gemini_raw_response_received chars={}", rawBody.length());
+
+            JsonNode response = objectMapper.readTree(rawBody);
+            String jsonText = response.path("candidates").path(0)
+                    .path("content").path("parts").path(0).path("text").asText(null);
             if (!StringUtils.hasText(jsonText)) {
+                log.error("ResumeAnalysis gemini_response_body={}", rawBody);
                 throw new BadRequestException("Gemini did not return resume analysis JSON.");
             }
             log.info("ResumeAnalysis phase=gemini_response_received chars={}", jsonText.length());
-            return normalizeAnalysis(objectMapper.readTree(jsonText));
+            JsonNode result = normalizeAnalysis(objectMapper.readTree(jsonText));
+            circuitBreaker.recordSuccess();
+            return result;
         } catch (IOException exception) {
+            circuitBreaker.recordFailure();
             throw new BadRequestException("Gemini returned invalid resume analysis JSON: " + exception.getMessage());
         } catch (RestClientException exception) {
+            circuitBreaker.recordFailure();
             throw new BadRequestException("Gemini resume analysis failed: " + exception.getMessage());
         }
     }
@@ -144,23 +162,51 @@ public class ResumeAnalysisService {
     private String prompt(String resumeText, Integer experienceYears) {
         int declaredExperience = experienceYears == null ? 0 : experienceYears;
         return """
-                Analyze this candidate resume for a hackathon/recruitment event.
-                Return only valid JSON with this exact shape:
+                You are a strict technical recruiter evaluating a resume for a competitive hackathon/recruitment event.
+                Be HARSH and OBJECTIVE. Do not give benefit of the doubt. Only reward what is clearly evidenced.
+
+                Return ONLY valid JSON with this exact shape — no markdown, no explanation:
                 {
-                  "summary": "short candidate summary",
-                  "skills": ["skill"],
-                  "recommendation": "short hiring/event recommendation",
-                  "strengths": ["strength"],
-                  "gaps": ["gap"],
-                  "experienceYearsDetected": 0
+                  "summary": "2-3 sentence objective assessment of the candidate",
+                  "skills": ["skill1", "skill2"],
+                  "recommendation": "STRONG_HIRE | HIRE | BORDERLINE | REJECT — followed by one sentence justification",
+                  "strengths": ["specific strength backed by evidence in resume"],
+                  "gaps": ["specific gap or concern"],
+                  "redFlags": ["any of: buzzword stuffing, unexplained gaps, vague claims, inflated titles, no measurable outcomes"],
+                  "experienceYearsDetected": 0,
+                  "scores": {
+                    "technicalDepth": 0,
+                    "projectQuality": 0,
+                    "achievementClarity": 0,
+                    "skillsAuthenticity": 0,
+                    "consistencyScore": 0
+                  }
                 }
-                Do not calculate aiScore. The backend will calculate aiScore.
-                skills must contain only the top 12 concise technical or professional skills.
-                experienceYearsDetected must be a non-negative integer inferred from the resume.
+
+                SCORING RULES — rate each dimension 0 to 10:
+                technicalDepth: Depth of technical knowledge. 8-10 only if candidate demonstrates deep expertise
+                  with architecture decisions, advanced concepts, or specialized knowledge — NOT just listing frameworks.
+                  Listing React + Node + Python with no depth evidence = max 4.
+                projectQuality: Complexity and real-world impact of projects. 8-10 only for production systems,
+                  significant scale, or novel work. Tutorial/CRUD projects = max 3. Academic projects = max 5.
+                achievementClarity: Are outcomes MEASURABLE? (e.g., "reduced latency by 40%%", "served 10k users").
+                  Vague claims like "improved performance" = 2. No achievements at all = 0.
+                skillsAuthenticity: Do the listed skills appear to be genuinely used in projects/work?
+                  Skills listed with zero supporting evidence = 1 each. Penalize buzzword-only resumes heavily.
+                consistencyScore: Does the timeline make sense? Do skills match claimed experience level?
+                  Mismatch between declared (%d years) and what resume evidence suggests = deduct heavily.
+
+                STRICT RULES:
+                - skills: list only top 10 skills that are EVIDENCED in the resume. Do not list skills mentioned once with no context.
+                - strengths: only add a strength if there is EXPLICIT evidence for it in the resume text.
+                - gaps: be thorough — missing quantification, shallow projects, no leadership, narrow skillset etc.
+                - redFlags: flag anything suspicious. Err on the side of caution.
+                - experienceYearsDetected: infer from dates in resume ONLY. If no dates, return 0.
+
                 Declared experience years: %d
                 Resume text:
                 %s
-                """.formatted(declaredExperience, resumeText);
+                """.formatted(declaredExperience, declaredExperience, resumeText);
     }
 
     private JsonNode normalizeAnalysis(JsonNode analysis) {
@@ -171,34 +217,90 @@ public class ResumeAnalysisService {
         normalized.put("recommendation", text(analysis, "recommendation"));
         normalized.set("strengths", array(analysis, "strengths"));
         normalized.set("gaps", array(analysis, "gaps"));
+        normalized.set("redFlags", array(analysis, "redFlags"));
         normalized.put("experienceYearsDetected", Math.max(0, analysis.path("experienceYearsDetected").asInt(0)));
+
+        // Normalise scores sub-object; clamp each dimension to [0, 10]
+        JsonNode rawScores = analysis.path("scores");
+        ObjectNode scores = objectMapper.createObjectNode();
+        scores.put("technicalDepth",     clamp(rawScores.path("technicalDepth").asInt(0), 0, 10));
+        scores.put("projectQuality",     clamp(rawScores.path("projectQuality").asInt(0), 0, 10));
+        scores.put("achievementClarity", clamp(rawScores.path("achievementClarity").asInt(0), 0, 10));
+        scores.put("skillsAuthenticity", clamp(rawScores.path("skillsAuthenticity").asInt(0), 0, 10));
+        scores.put("consistencyScore",   clamp(rawScores.path("consistencyScore").asInt(0), 0, 10));
+        normalized.set("scores", scores);
         return normalized;
     }
 
+    /**
+     * Strict dimension-based scoring. No free base score — every point must be earned.
+     *
+     * Positive components (max 95):
+     *   technicalDepth      0-10  × 2.0  = max 20
+     *   projectQuality      0-10  × 2.0  = max 20
+     *   achievementClarity  0-10  × 1.5  = max 15
+     *   skillsAuthenticity  0-10  × 1.5  = max 15
+     *   consistencyScore    0-10  × 1.0  = max 10
+     *   experienceScore                  = max 10 (hard-capped, penalised for mismatch)
+     *   strengthsBonus      1 per unique evidenced strength = max 5
+     *
+     * Penalties:
+     *   redFlagPenalty  -6 per red flag  = max -30
+     *   gapPenalty      -3 per gap       = max -15
+     *   mismatchPenalty -5 if declared experience > detected by >2 years
+     */
     private JsonNode addCalculatedScore(JsonNode analysis, Integer declaredExperienceYears) {
         ObjectNode scored = analysis.deepCopy();
-        int skillsCount = scored.path("skills").size();
-        int strengthsCount = scored.path("strengths").size();
-        int gapsCount = scored.path("gaps").size();
-        int detectedExperience = scored.path("experienceYearsDetected").asInt(0);
-        int declaredExperience = declaredExperienceYears == null ? 0 : Math.max(0, declaredExperienceYears);
-        int bestExperience = Math.max(detectedExperience, declaredExperience);
 
-        int skillScore = Math.min(45, skillsCount * 5);
-        int experienceScore = Math.min(30, bestExperience * 6);
-        int strengthScore = Math.min(15, strengthsCount * 5);
-        int gapPenalty = Math.min(20, gapsCount * 4);
-        int aiScore = clamp(35 + skillScore + experienceScore + strengthScore - gapPenalty, 0, 100);
+        // Read Gemini-rated dimensions
+        JsonNode s = scored.path("scores");
+        int technicalDepth      = clamp(s.path("technicalDepth").asInt(0), 0, 10);
+        int projectQuality      = clamp(s.path("projectQuality").asInt(0), 0, 10);
+        int achievementClarity  = clamp(s.path("achievementClarity").asInt(0), 0, 10);
+        int skillsAuthenticity  = clamp(s.path("skillsAuthenticity").asInt(0), 0, 10);
+        int consistencyScore    = clamp(s.path("consistencyScore").asInt(0), 0, 10);
+
+        int detectedExperience  = Math.max(0, scored.path("experienceYearsDetected").asInt(0));
+        int declaredExperience  = declaredExperienceYears == null ? 0 : Math.max(0, declaredExperienceYears);
+        int strengthsCount      = scored.path("strengths").size();
+        int gapsCount           = scored.path("gaps").size();
+        int redFlagsCount       = scored.path("redFlags").size();
+
+        // Positive component scores
+        int techScore        = (int) Math.round(technicalDepth     * 2.0);
+        int projScore        = (int) Math.round(projectQuality     * 2.0);
+        int achievScore      = (int) Math.round(achievementClarity * 1.5);
+        int authScore        = (int) Math.round(skillsAuthenticity * 1.5);
+        int consScore        = consistencyScore;
+        // Experience: reward real detected years, cap at 10, penalise over-claiming
+        int experienceScore  = Math.min(10, detectedExperience * 2);
+        int strengthsBonus   = Math.min(5, strengthsCount);
+
+        // Penalties
+        int redFlagPenalty   = Math.min(30, redFlagsCount * 6);
+        int gapPenalty       = Math.min(15, gapsCount * 3);
+        // Mismatch penalty: declared years significantly exceed what resume evidence shows
+        int mismatchPenalty  = (declaredExperience - detectedExperience > 2) ? 5 : 0;
+
+        int rawScore = techScore + projScore + achievScore + authScore + consScore
+                + experienceScore + strengthsBonus
+                - redFlagPenalty - gapPenalty - mismatchPenalty;
+        int aiScore = clamp(rawScore, 0, 95);
 
         scored.put("aiScore", aiScore);
         ObjectNode breakdown = scored.putObject("scoreBreakdown");
-        breakdown.put("baseScore", 35);
-        breakdown.put("skillScore", skillScore);
-        breakdown.put("experienceScore", experienceScore);
-        breakdown.put("strengthScore", strengthScore);
-        breakdown.put("gapPenalty", gapPenalty);
+        breakdown.put("technicalDepthScore",   techScore);
+        breakdown.put("projectQualityScore",   projScore);
+        breakdown.put("achievementClarityScore", achievScore);
+        breakdown.put("skillsAuthenticityScore", authScore);
+        breakdown.put("consistencyScore",      consScore);
+        breakdown.put("experienceScore",        experienceScore);
+        breakdown.put("strengthsBonus",         strengthsBonus);
+        breakdown.put("redFlagPenalty",        -redFlagPenalty);
+        breakdown.put("gapPenalty",            -gapPenalty);
+        breakdown.put("mismatchPenalty",       -mismatchPenalty);
         breakdown.put("declaredExperienceYears", declaredExperience);
-        breakdown.put("experienceYearsUsed", bestExperience);
+        breakdown.put("detectedExperienceYears", detectedExperience);
         return scored;
     }
 

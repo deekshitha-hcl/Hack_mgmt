@@ -8,6 +8,7 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.LocalDateTime;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -46,4 +47,19 @@ public class Participant {
 
     @Enumerated(EnumType.STRING)
     private ParticipantStatus status;
+
+    @Builder.Default
+    private Boolean aiAnalysisPending = false;
+
+    @Builder.Default
+    private Integer aiAnalysisAttemptCount = 0;
+
+    private LocalDateTime lastAiAnalysisAttempt;
+
+    @Column(columnDefinition = "TEXT")
+    private String lastAiAnalysisError;
+
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    private AiAnalysisStatus aiAnalysisStatus = AiAnalysisStatus.NOT_STARTED;
 }

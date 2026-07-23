@@ -1,6 +1,10 @@
 package com.hackathon.controller;
 
 import com.hackathon.dto.ParticipantRegistrationRequest;
+import com.hackathon.dto.ParticipantCheckInNavigationResponse;
+import com.hackathon.dto.ParticipantCheckInRequest;
+import com.hackathon.dto.ParticipantCheckInResponse;
+import com.hackathon.dto.AIAnalysisStatusResponse;
 import com.hackathon.entity.Participant;
 import com.hackathon.service.ParticipantService;
 import jakarta.validation.Valid;
@@ -42,6 +46,25 @@ public class ParticipantController {
     @ResponseStatus(HttpStatus.CREATED)
     public Participant register(@Valid @RequestBody ParticipantRegistrationRequest request) {
         return participantService.register(request, null, null);
+    }
+
+    @GetMapping("/check-in/qr")
+    public ParticipantCheckInNavigationResponse checkInQrPage(
+            @org.springframework.web.bind.annotation.RequestParam Long eventId,
+            @org.springframework.web.bind.annotation.RequestParam(required = false) String email) {
+        return participantService.getCheckInNavigation(eventId, email);
+    }
+
+    @PostMapping(value = "/check-in/verify", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public ParticipantCheckInResponse verifyAndCheckIn(@Valid @RequestBody ParticipantCheckInRequest request) {
+        return participantService.verifyAndCheckIn(request);
+    }
+
+    @GetMapping("/check-in/status/{participantId}")
+    public AIAnalysisStatusResponse getAiAnalysisStatus(
+            @PathVariable Long participantId,
+            @org.springframework.web.bind.annotation.RequestParam(required = false, defaultValue = "3") int maxRetries) {
+        return participantService.getAiAnalysisStatus(participantId, maxRetries);
     }
 
     @GetMapping

@@ -10,6 +10,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hackathon.dto.ParticipantCheckInRequest;
+import com.hackathon.dto.ParticipantCheckInResponse;
 import com.hackathon.dto.ParticipantRegistrationRequest;
 import com.hackathon.entity.Participant;
 import com.hackathon.entity.ParticipantStatus;
@@ -61,6 +63,7 @@ class ParticipantControllerTest {
                         .param("eventId", "1")
                         .param("name", "Test User")
                         .param("email", "test@example.com")
+                        .param("techStack", "Java, Spring")
                         .param("phone", "9876543210")
                         .param("experienceYears", "2"))
                 .andExpect(status().isCreated())
@@ -87,8 +90,35 @@ class ParticipantControllerTest {
         verify(participantService).register(refEq(request), isNull(), isNull());
     }
 
+    @Test
+    void verifyAndCheckInAcceptsJsonRequest() throws Exception {
+        ParticipantCheckInRequest request = new ParticipantCheckInRequest("test@example.com", "PART-0002");
+        ParticipantCheckInResponse response = new ParticipantCheckInResponse(
+                2L,
+                "PART-0002",
+                "Test User",
+                "test@example.com",
+                "CHECKED_IN",
+                "Check-in successful. Resume analysis has been queued.",
+                "/participant/dashboard",
+                "/support",
+                true
+        );
+
+        when(participantService.verifyAndCheckIn(refEq(request))).thenReturn(response);
+
+        mockMvc.perform(post("/api/participants/check-in/verify")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CHECKED_IN"))
+                .andExpect(jsonPath("$.resumeAnalysisTriggered").value(true));
+
+        verify(participantService).verifyAndCheckIn(refEq(request));
+    }
+
     private ParticipantRegistrationRequest registrationRequest() {
-        return new ParticipantRegistrationRequest(1L, "Test User", "test@example.com", "9876543210", 2);
+        return new ParticipantRegistrationRequest(1L, "Test User", "test@example.com", "Java, Spring", "9876543210", 2);
     }
 
     private Participant participant() {

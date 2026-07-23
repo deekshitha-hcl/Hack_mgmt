@@ -95,8 +95,9 @@ public class EventService {
                 .build();
         event = eventRepository.save(event);
         String registrationUrl = baseUrl + "/participants/register?eventId=" + event.getId();
+        String checkInQrLandingUrl = baseUrl + "/api/participants/check-in/qr?eventId=" + event.getId();
         event.setRegistrationUrl(registrationUrl);
-        event.setQrCodeUrl(qrCodeService.generateQrCode(registrationUrl));
+        event.setQrCodeUrl(qrCodeService.generateQrCode(checkInQrLandingUrl));
         return eventRepository.save(event);
     }
 

@@ -203,108 +203,9 @@ Check-in flow:
 
 1. Participant is verified using `email + participantCode`
 2. Status changes from `REGISTERED` to `CHECKED_IN`
-3. Participant record is marked as `aiAnalysisPending = true`
-4. Check-in response returns immediately (non-blocking)
-5. Background batch processing reads the pending flag and queues resume analysis asynchronously in batches
-
-#### AI Resume Analysis Batch Processing
-
-To handle high concurrency during venue check-ins, AI resume analysis runs in **batch mode** with **automatic retry on failure**:
-
-**How it works:**
-
-1. When participant checks in successfully, `aiAnalysisPending` flag is set to `true` (no direct AI call)
-2. **Scheduled batch processor** (`ParticipantAiBatchProcessingService`) runs periodically and:
-   - Queries all participants with `aiAnalysisPending = true` (within retry limit)
-   - Fetches a configurable batch (default: 5 participants)
-   - Processes each resume through Gemini API asynchronously
-   - Stores results: `aiScore`, `skills`, `resumeAnalysisJson`
-   - On success: sets `aiAnalysisPending = false`, `aiAnalysisStatus = SUCCESS`
-   - On failure: increments attempt count and applies exponential backoff before retry
-
-**Analysis Status Tracking:**
-
-Each participant has an `aiAnalysisStatus` field tracking:
-- `NOT_STARTED`: Analysis not yet initiated
-- `PENDING`: Queued for analysis, waiting for batch processing
-- `PROCESSING`: Currently being processed by AI service
-- `SUCCESS`: Analysis completed successfully
-- `FAILED`: Analysis failed after all retry attempts
-- `SKIPPED`: Analysis skipped (no resume provided)
-
-Additional tracking fields:
-- `aiAnalysisAttemptCount`: Number of retry attempts (integer 0+)
-- `lastAiAnalysisAttempt`: Timestamp of last attempt
-- `lastAiAnalysisError`: Error message from last failed attempt (if any)
-
-**Retry Logic with Exponential Backoff:**
-
-When analysis fails, the system automatically retries with exponential backoff:
-- **Formula**: `delay = base_delay × (multiplier^(attempt_count-1))`
-- **Max retries**: 3 (configurable via `app.ai.max-retries`)
-- **Base delay**: 60 seconds (configurable via `app.ai.retry-delay-seconds`)
-- **Backoff multiplier**: 2.0 (configurable via `app.ai.retry-backoff-multiplier`)
-
-**Example retry timeline:**
-1. First attempt: immediate (after check-in)
-2. Fails → next retry after 60 seconds (60 × 2^0)
-3. Fails → next retry after 120 seconds (60 × 2^1)
-4. Fails → next retry after 240 seconds (60 × 2^2)
-5. Fails again → marked as `FAILED`, `aiAnalysisPending = false`
-
-**Configuration properties** (in `application.properties`):
-
-```properties
-# Batch size: number of participants per batch (default: 5)
-app.ai.batch-size=5
-
-# Batch interval: milliseconds between batch processing runs (default: 30000 = 30s)
-app.ai.batch-interval-ms=30000
-
-# Enable/disable batch processing (default: true)
-app.ai.batch-processing-enabled=true
-
-# Max retry attempts for failed analysis (default: 3)
-app.ai.max-retries=3
-
-# Base delay in seconds before first retry (default: 60)
-app.ai.retry-delay-seconds=60
-
-# Exponential backoff multiplier (default: 2, meaning 2x increase per retry)
-app.ai.retry-backoff-multiplier=2
-```
-
-**Checking Analysis Status:**
-
-Frontend can poll the status endpoint: `GET /api/participants/check-in/status/{participantId}?maxRetries=3`
-
-Response:
-```json
-{
-  "participantId": 5,
-  "participantName": "Deekshi Kumar",
-  "status": "PROCESSING",
-  "statusDescription": "Currently being processed by AI service",
-  "attemptCount": 1,
-  "maxRetries": 3,
-  "lastAttemptTime": "2026-07-22T15:30:00",
-  "lastErrorMessage": null,
-  "aiScore": null,
-  "skills": null,
-  "message": "Your resume is currently being analyzed. Please check back soon."
-}
-```
-
-**Benefits:**
-
-- ✅ Prevents API overload during peak check-in times
-- ✅ Automatic retry on transient failures (network, API rate limits, etc.)
-- ✅ Exponential backoff prevents thundering herd problem
-- ✅ Clear status tracking for frontend polling
-- ✅ Audit trail of all attempts with timestamps and error messages
-- ✅ Resilient: pending participants not lost if service restarts
-- ✅ Non-blocking: participants see immediate check-in confirmation
-- ✅ Scalable: easy to adjust batch size/interval/retries based on load
+3. Resume AI analysis is triggered asynchronously (Gemini)
+4. AI result is stored later in participant fields: `aiScore`, `skills`, `resumeAnalysisJson`
+5. Check-in response returns immediately with `resumeAnalysisTriggered=true`
 
 ### Panelist Management
 
@@ -985,90 +886,12 @@ Response `200 OK`:
   "name": "Test User",
   "email": "participant@example.com",
   "status": "CHECKED_IN",
-  "message": "Check-in successful. Resume analysis has been queued for batch processing.",
+  "message": "Check-in successful. Resume analysis has been queued.",
   "dashboardUrl": "http://localhost:3000/participant/dashboard",
   "supportUrl": "http://localhost:3000/support",
   "resumeAnalysisTriggered": true
 }
 ```
-
-**Behind the scenes (batch processing):**
-
-1. Participant record status changes to `CHECKED_IN`
-2. `aiAnalysisPending` flag set to `true` in database
-3. Response returned immediately (non-blocking)
-4. Background scheduled task picks up pending participants in batches
-5. Resumes processed through Gemini API asynchronously
-6. Results persisted: `aiScore`, `skills`, `resumeAnalysisJson`
-7. `aiAnalysisPending` set back to `false` after processing
-
-#### Check Analysis Status
-
-Participants or frontend can check the status of AI resume analysis:
-
-```http
-GET /api/participants/check-in/status/{participantId}?maxRetries=3
-```
-
-Path parameters:
-- `participantId`: ID of the participant to check
-
-Query parameters:
-- `maxRetries` (optional): Maximum retry attempts for context (default: 3)
-
-Response `200 OK`:
-
-```json
-{
-  "participantId": 2,
-  "participantName": "Test User",
-  "status": "PROCESSING",
-  "statusDescription": "Currently being processed by AI service",
-  "attemptCount": 1,
-  "maxRetries": 3,
-  "lastAttemptTime": "2026-07-22T15:30:00",
-  "lastErrorMessage": null,
-  "aiScore": null,
-  "skills": null,
-  "message": "Your resume is currently being analyzed. Please check back soon."
-}
-```
-
-**Possible status values and messages:**
-
-| Status | Description | Message |
-|--------|-------------|---------|
-| `NOT_STARTED` | Analysis not yet initiated | "Analysis not yet started." |
-| `PENDING` | Queued for batch processing | "Your resume is queued for AI analysis. It will be processed shortly." |
-| `PROCESSING` | Currently processing by Gemini API | "Your resume is currently being analyzed. Please check back soon." |
-| `SUCCESS` | Analysis completed successfully | "Resume analysis completed successfully." |
-| `SKIPPED` | No resume provided | "Analysis was skipped (no resume provided)." |
-| `FAILED` | Failed after max retries | "Analysis failed after 3 attempts. Last error: {error message}" |
-
-**Retry status example (attempt 2 of 3):**
-
-```json
-{
-  "participantId": 5,
-  "participantName": "Deekshi Kumar",
-  "status": "FAILED",
-  "statusDescription": "Analysis failed after all retry attempts",
-  "attemptCount": 2,
-  "maxRetries": 3,
-  "lastAttemptTime": "2026-07-22T15:28:45",
-  "lastErrorMessage": "API timeout - will retry automatically",
-  "aiScore": null,
-  "skills": null,
-  "message": "Previous analysis attempt failed. Will retry automatically."
-}
-```
-
-**Usage:**
-
-Frontend can poll this endpoint periodically to show live status updates:
-- On check-in, start polling every 2-5 seconds
-- Once `status = SUCCESS`, display the AI results
-- If `status = FAILED` after max retries, show error message
 
 ### 7.4 Panelists
 
